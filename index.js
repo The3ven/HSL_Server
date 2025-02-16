@@ -112,7 +112,7 @@ app.get("/getVideosPathByname", async (req, res) => {
 	}
 });
 
-app.post("/upload", upload.single("file"), async (req, res) => {
+app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 	console.log("file uploaded successfully");
 	const videoID = uuid4();
 	const videoPath = req.file.path;
@@ -148,14 +148,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 			path: videoUrl,
 			size: videoSize,
 		});
-		return res.json({
+		res.json({
 			message: "video converted to hls",
 			videoUrl: videoUrl,
 			videoID: videoID,
 			videoSize: videoSize,
 		});
 
-		fs.rmSync(videoPath); // remove upload video after chunk
+		return fs.rmSync(videoPath); // remove upload video after chunk
 	});
 });
 
