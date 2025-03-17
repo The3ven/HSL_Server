@@ -5,10 +5,24 @@ import { v4 as uuid4 } from "uuid";
 import { server_port, client_port, db } from "./config.js";
 import path from "path";
 import fs from "fs";
+import os from "os";
+import { getDiskUsage } from "./helper/diskUsage.js";
+import { formatUptime, formatCurrentTime } from "./helper/timeFormatter.js";
 import { exec } from "child_process"; // whach out
-import { insert, readAll, read } from "./services/dbHandler.js";
+import { dbinsert, dbread } from "./services/dbHandler.js";
 
 /* ------------------------------------------------------- ENV ------------------------------------------------------ */
+
+
+// Check if the folder exists
+if (!fs.existsSync("./uploads")) {
+	// If the folder does not exist, create it
+	fs.mkdirSync("./uploads", { recursive: true });
+	console.log('Folder created');
+} else {
+	console.log('Folder already exists');
+}
+
 
 const app = express();
 
@@ -53,63 +67,24 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static("uploads"));
 
-app.get("/", (req, res) => {
-	return res.json({ message: "Hello, World!" });
-});
+app.get("/status", async (req, res) => {
+	const memoryUsage = process.memoryUsage();
+	// const cpuUsage = os.loadavg(); // CPU load average over 1, 5, and 15 minutes
+	const uptime = os.uptime(); // System uptime in seconds
+	const disk = await getDiskUsage("/"); // Root partition disk usage
 
-app.get("/getVideoslist", async (req, res) => {
-	// console.log("req : ", req);
-	try {
-		const data = await readAll(db, "videos_info");
-
-		// console.log("data : ", data);
-
-		if (!data) {
-			return res.status(404).json({ message: "Noting there!" });
-		}
-
-		return res.status(200).json({
-			success: true,
-			Message: `Retrieved ${data.length} documents`,
-			count: data.length,
-			data: data,
-		});
-	} catch (error) {
-		return res.status(500).json({
-			success: false,
-			message: "Internal Server Error",
-			error: error.message,
-		});
-	}
-});
-
-app.get("/getVideosPathByname", async (req, res) => {
-	// console.log("req : ", req);
-	try {
-		const { title } = req.query;
-
-		console.log("title : ", title);
-
-		const data = await read(db, "videos_info", { title: title });
-
-		console.log("data : ", data);
-
-		if (!data) {
-			return res.status(404).json({ message: "Noting there!" });
-		}
-
-		return res.status(200).json({
-			success: true,
-			Message: `data retrieved`,
-			data: data,
-		});
-	} catch (error) {
-		return res.status(500).json({
-			success: false,
-			message: "Internal Server Error",
-			error: error.message,
-		});
-	}
+	return res.status(200).json({
+		status: true,
+		// cpuUsage,
+		memory: {
+			total: (os.totalmem() / (1024 * 1024)).toFixed(2) + " MB",
+			free: (os.freemem() / (1024 * 1024)).toFixed(2) + " MB",
+			used: (memoryUsage.rss / (1024 * 1024)).toFixed(2) + " MB",
+		},
+		disk,
+		uptime: formatUptime(uptime),
+		currentTime: formatCurrentTime(),
+	});
 });
 
 app.post("/uploadVideo", upload.single("file"), async (req, res) => {
@@ -141,24 +116,37 @@ app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 		console.log(`stdout: ${stdout}`);
 		console.log(`stderr: ${stderr}`);
 
-		videoUrl = `http://localhost:${server_port}/videos/${videoID}/index.m3u8`;
+		videoUrl = `/uploads/videos/${videoID}/index.m3u8`;
 
-		await insert(db, "videos_info", {
-			title: req.file.originalname,
+		const { success, message, error } = await dbinsert(db, "videos_info", {
+			title: req.file.originalname.replace(/\.[^.]+$/, ''),
 			path: videoUrl,
 			size: videoSize,
 		});
-		res.json({
-			message: "video converted to hls",
-			videoUrl: videoUrl,
-			videoID: videoID,
-			videoSize: videoSize,
-		});
+
+		if (success) {
+			res.json({
+				status: success,
+				message: "video converted to hls and updated info on db",
+				videoUrl: videoUrl,
+				videoID: videoID,
+				videoSize: videoSize,
+			});
+		} else {
+			return res.status(500).json({
+				status: false,
+				message: message,
+				error: error,
+				videoUrl: videoUrl,
+				videoID: videoID,
+				videoSize: videoSize,
+			});
+		}
 
 		return fs.rmSync(videoPath); // remove upload video after chunk
 	});
 });
 
-app.listen(server_port, () => {
+app.listen(server_port, '0.0.0.0', () => {
 	console.log(`App is listening on port ${server_port}`);
 });

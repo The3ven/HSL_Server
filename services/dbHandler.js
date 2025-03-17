@@ -1,77 +1,72 @@
 import { database } from "./db.js";
 
-export const insert = async (db, collection, data) => {
-	// console.log("db : ", db, "collection : ", collection, "data : ", data);
+export const dbinsert = async (db, collection, data) => {
+	if (!data || Object.keys(data).length === 0) {
+		console.error("Cannot insert empty data.");
+		return { success: false, message: "Empty data provided" };
+	}
+
 	let { conn, coll } = await database(db, collection);
+
 	// console.log("conn : ", conn, "coll : ", coll);
 
 	try {
-		await coll.insertOne(data);
-		return true;
-	} catch (error) {
-		return false;
-	} finally {
-		if (conn) {
-			await conn.close();
+		const result = await coll.insertOne(data);
+
+		// Check if the insert was successful
+		if (!result.acknowledged) {
+			console.warn("Insert operation not acknowledged by MongoDB.");
+			return { success: false, message: "Insert failed" };
 		}
+		console.log(`Inserted document with ID: ${result.insertedId}`);
+		return {
+			success: true,
+			insertedId: result.insertedId,
+			message: "Insert successful",
+		};
+	} catch (error) {
+		console.error("Insert failed:", error);
+		return {
+			success: false,
+			message: "Insert failed",
+			error: error.message,
+		};
+	} finally {
+		if (conn) await conn.close();
 	}
 };
 
-export const updateviolant = async (db, collection, data) => {
-	let { conn, coll } = await database(db, collection);
-	try {
-		await coll.updateOne(data);
-		return true;
-	} catch (error) {
-		return false;
-	} finally {
-		if (conn) {
-			await conn.close();
-		}
-	}
-};
-
-export const read = async (db, collection, data) => {
+export const dbread = async (db, collection, data) => {
 	let { conn, coll } = await database(db, collection);
 
 	console.log("data : ", data);
 
+	if (!data || Object.keys(data).length === 0) {
+		console.error("Query cannot be empty.");
+		return { success: false, message: "Invalid query provided" };
+	}
+
 	if (!coll) {
-		console.error("❌ Failed to get data");
-		return null;
+		console.error("Failed to get collection.");
+		return { success: false, message: "Database connection failed" };
 	}
 
 	try {
 		let response = await coll.findOne(data);
-		console.log("response : ", response);
-		return response;
-	} catch (error) {
-		console.log(`error : ${error}`);
-	} finally {
-		if (conn) {
-			await conn.close();
+		if (!response) {
+			console.warn("No matching document found.");
+			return { success: false, message: "No matching document found" };
 		}
-	}
-};
-
-export const readAll = async (db, collectionName) => {
-	const { conn, coll } = await database(db, collectionName);
-
-	if (!coll) {
-		console.error("❌ Failed to get collection");
-		return [];
-	}
-
-	try {
-		const data = await coll.find({}).toArray(); // Fetch all documents
-		console.log(
-			`✅ Retrieved ${data.length} documents from ${collectionName}`
-		);
-		return data;
+		console.log("Document found:", response);
+		return { success: true, data: response };
 	} catch (error) {
-		console.error("❌ Error fetching documents:", error);
-		return [];
+		console.error("Error fetching data:", error);
+		return {
+			success: false,
+			message: "Error reading data",
+			error: error.message,
+		};
 	} finally {
-		if (conn) await conn.close(); // Close the connection after query
+		if (conn) await conn.close();
 	}
 };
