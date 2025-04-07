@@ -8,8 +8,10 @@ import fs from "fs";
 import os from "os";
 import { getDiskUsage } from "./helper/diskUsage.js";
 import { formatUptime, formatCurrentTime } from "./helper/timeFormatter.js";
-import { exec } from "child_process"; // whach out
+import { exec, spawn } from "child_process"; // whach out
 import { dbinsert, dbread } from "./services/dbHandler.js";
+import https from "https";
+
 
 /* ------------------------------------------------------- ENV ------------------------------------------------------ */
 
@@ -24,7 +26,16 @@ if (!fs.existsSync("./uploads")) {
 }
 
 
+const privateKey = fs.readFileSync('api_server.key', 'utf8');
+const certificate = fs.readFileSync('api_server.cert', 'utf8');
+
+
+const credentials = { key: privateKey, cert: certificate };
+
+
 const app = express();
+
+const httpsServer = https.createServer(credentials, app);
 
 // multer middleware
 
@@ -54,6 +65,9 @@ app.use(
 	})
 );
 
+
+
+
 app.use((req, res, next) => {
 	res.header("Access-Control-Allow-Origin", "*"); // watch it
 	res.header(
@@ -75,6 +89,7 @@ app.get("/status", async (req, res) => {
 
 	return res.status(200).json({
 		status: true,
+		name: 'VideoServer',
 		// cpuUsage,
 		memory: {
 			total: (os.totalmem() / (1024 * 1024)).toFixed(2) + " MB",
@@ -87,6 +102,46 @@ app.get("/status", async (req, res) => {
 	});
 });
 
+
+// Wrap the spawn command to manage the process and ensure memory cleanup
+const spawnPromise = (cmd) => {
+	return new Promise((resolve, reject) => {
+		const process = spawn(cmd, { shell: true });
+
+		let stdout = '';
+		let stderr = '';
+
+		// Capture stdout data
+		process.stdout.on('data', (data) => {
+			stdout += data.toString();
+		});
+
+		// Capture stderr data
+		process.stderr.on('data', (data) => {
+			stderr += data.toString();
+		});
+
+		// Handle process exit
+		process.on('close', (code) => {
+			if (code !== 0) {
+				reject(`Process exited with code ${code}. stderr: ${stderr}`);
+			} else {
+				resolve({ stdout, stderr });
+			}
+		});
+
+		// Handle errors from the spawn process
+		process.on('error', (err) => {
+			reject(`Failed to start the process: ${err.message}`);
+		});
+
+		// Ensure proper cleanup of process on failure or success
+		process.on('exit', () => {
+			process.kill(); // Explicitly kill the process after execution
+		});
+	});
+};
+
 app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 	console.log("file uploaded successfully");
 	const videoID = uuid4();
@@ -94,13 +149,36 @@ app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 	const videoSize = req.file.size;
 	const outputPath = `./uploads/videos/${videoID}`;
 	const hlsPath = `${outputPath}/index.m3u8`;
+	const titleName = req.file.originalname.replace(/\.[^.]+$/, '');
 	let videoUrl;
 	console.log("hls path ", hlsPath);
 	console.log("req.file.originalname : ", req.file.originalname);
+	console.log("videoPath : ", videoPath);
+
 	console.log("req.file : ", req.file);
 
 	if (!fs.existsSync(outputPath)) {
 		fs.mkdirSync(outputPath, { recursive: true });
+	}
+
+	let imagePath = `${outputPath}/${titleName}.jpg`;
+
+	// Extrect Image
+
+	// const extImaCmd = `ffmpeg -i ${videoPath} -frames:v 1 -q:v 2 "${imagePath}"`;
+
+	const extImaCmd = `ffmpeg -i ${videoPath} -ss 00:00:01 -vframes 1 -update 1 -f image2 "${imagePath}"`
+
+	console.log("imagePath : ", imagePath);
+
+
+	try {
+		const result = await spawnPromise(extImaCmd);
+		console.log(`stdout: ${result.stdout}`);
+		console.log(`stderr: ${result.stderr}`);
+	} catch (error) {
+		console.error(error);
+		imagePath = "";
 	}
 
 	// ffmpeg
@@ -118,28 +196,45 @@ app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 
 		videoUrl = `/uploads/videos/${videoID}/index.m3u8`;
 
+		console.log("imagePath : ", imagePath);
+
+		try {
+			fs.accessSync(imagePath, fs.constants.F_OK);
+			console.log("Image exists");
+		}
+		catch (err) {
+			console.error("Image not exists error : ", err);
+			imagePath = "";
+		}
+
+
 		const { success, message, error } = await dbinsert(db, "videos_info", {
-			title: req.file.originalname.replace(/\.[^.]+$/, ''),
+			title: titleName,
 			path: videoUrl,
 			size: videoSize,
+			img: imagePath.substring(1)
 		});
 
 		if (success) {
 			res.json({
 				status: success,
 				message: "video converted to hls and updated info on db",
+				title: titleName,
 				videoUrl: videoUrl,
 				videoID: videoID,
 				videoSize: videoSize,
+				img: imagePath.substring(1)
 			});
 		} else {
 			return res.status(500).json({
 				status: false,
 				message: message,
+				title: titleName,
 				error: error,
 				videoUrl: videoUrl,
 				videoID: videoID,
 				videoSize: videoSize,
+				img: imagePath.substring(1)
 			});
 		}
 
@@ -147,6 +242,11 @@ app.post("/uploadVideo", upload.single("file"), async (req, res) => {
 	});
 });
 
-app.listen(server_port, '0.0.0.0', () => {
+// app.listen(server_port, '0.0.0.0', () => {
+// 	console.log(`App is listening on port ${server_port}`);
+// });
+
+
+httpsServer.listen(server_port, '0.0.0.0', () => {
 	console.log(`App is listening on port ${server_port}`);
 });

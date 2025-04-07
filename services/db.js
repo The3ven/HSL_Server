@@ -12,8 +12,8 @@ export const database = async (db, collection) => {
 	// );
 	try {
 		let conn = await MongoClient.connect(mongodb_url, {
-			useNewUrlParser: true,
-			useUnifiedTopology: true,
+			// useNewUrlParser: true,
+			// useUnifiedTopology: true,
 		});
 
 		const coll = await conn.db(db).collection(collection);
