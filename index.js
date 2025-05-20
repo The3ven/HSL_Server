@@ -11,6 +11,7 @@ import { formatUptime, formatCurrentTime } from "./helper/timeFormatter.js";
 import { exec, spawn } from "child_process"; // whach out
 import https from "https";
 import ApiService from "./services/apiService.js"
+import axios from "axios";
 
 
 /* ------------------------------------------------------- ENV ------------------------------------------------------ */
@@ -32,18 +33,7 @@ const certificate = fs.readFileSync('api_server.cert', 'utf8');
 
 const credentials = { key: privateKey, cert: certificate };
 
-// Example usage
 const apiService = new ApiService(apiServer);
-
-// Test GET
-// apiService.getData('/videos/user123').then(console.log).catch(console.error);
-
-// Test POST
-// apiService.postData('/upload', { name: 'Test Video' }).then(console.log).catch(console.error);
-
-// Test DELETE
-// apiService.deleteData('/videos/user123/file.mp4').then(console.log).catch(console.error);
-
 
 const app = express();
 
@@ -173,10 +163,26 @@ app.post("/uploadProfile", upload.single("profileImage"), async (req, res) => {
 	console.log("useId : ", userId);
 
 
+	if (
+		!userName ||
+		userName.trim() === "" ||
+		!userId ||
+		userId.trim() === "" ||
+		!email ||
+		email.trim() === ""
+	) {
+		return res.status(400).json({
+			status: false,
+			message: "Required field missing!",
+		});
+	}
+
+
+
 	// /uploads/profile_pictures/user123/profile.jpg
 
 	const userProfilePath = `./uploads/profile_pictures/${userId}`;
-	const finalDestination = imagePath.replace("uploads", `uploads\\profile_pictures\\${useId}`)
+	const finalDestination = imagePath.replace("uploads", `uploads\\profile_pictures\\${userId}`);
 
 	// if dir is exists delete it
 
@@ -199,6 +205,45 @@ app.post("/uploadProfile", upload.single("profileImage"), async (req, res) => {
 
 
 	console.log("finalDestination : ", finalDestination);
+
+	const endpoint = "/updateProfilePicture";
+
+	const payload = {
+		userId,
+		email,
+		userName,
+		profilePicture: finalDestination,
+	}
+
+	let success, message, error;
+
+	await apiService.postData(endpoint, payload).then((response) => {
+		console.log("response : ", response);
+		success = response.status;
+		message = response.message;
+		error = response.error;
+	}).catch((error) => {
+		console.error("Error : ", error);
+		success = false;
+		message = "Error in API call";
+		error = error;
+	});
+
+	console.log("success : ", success);
+	console.log("message : ", message);
+	console.log("error : ", error);
+
+	if (success) {
+		res.status(200).json({
+			status: true,
+			message,
+		});
+	} else {
+		return res.status(500).json({
+			status: false,
+			message,
+		});
+	}
 
 
 
