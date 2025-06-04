@@ -2,7 +2,7 @@ import express, { response } from "express";
 import cors from "cors";
 import multer from "multer";
 import { v4 as uuid4 } from "uuid";
-import { server_port, client_port, db, apiServer } from "./config.js";
+import { server_port, client_port, apiServer } from "./config.js";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -11,8 +11,8 @@ import { formatUptime, formatCurrentTime } from "./helper/timeFormatter.js";
 import { exec, spawn } from "child_process"; // whach out
 import https from "https";
 import ApiService from "./services/apiService.js"
-import axios from "axios";
-
+import { getSongMetadataFromLastFM } from "./helper/titleFormatter.js";
+import youtubedl from 'youtube-dl-exec';
 
 /* ------------------------------------------------------- ENV ------------------------------------------------------ */
 
@@ -145,7 +145,7 @@ const spawnPromise = (cmd) => {
 };
 
 
-app.post("/uploadProfile", upload.single("profileImage"), async (req, res) => {
+app.post("/uploadProfilePicture", upload.single("profileImage"), async (req, res) => {
 	console.log("req.body : ", req.body);
 
 
@@ -237,6 +237,7 @@ app.post("/uploadProfile", upload.single("profileImage"), async (req, res) => {
 		res.status(200).json({
 			status: true,
 			message,
+			profilePicture: finalDestination,
 		});
 	} else {
 		return res.status(500).json({
@@ -248,6 +249,44 @@ app.post("/uploadProfile", upload.single("profileImage"), async (req, res) => {
 
 
 });
+
+/**
+ * Get video metadata using ffprobe.
+ * @param {string} videoPath - Path to the video file.
+ * @returns {Promise<{ duration: number, format: string, size: number }>} - Metadata object.
+ */
+async function getVideoMetadata(videoPath) {
+	return new Promise((resolve, reject) => {
+		if (!fs.existsSync(videoPath)) {
+			return reject(new Error(`Video file not found at path: ${videoPath}`));
+		}
+
+		const command = `ffprobe -v error -show_entries format=duration,size,format_name -of json "${videoPath}"`;
+
+		exec(command, (error, stdout, stderr) => {
+			if (error) {
+				return reject(new Error(`Error executing ffprobe: ${stderr.trim() || error.message}`));
+			}
+
+			try {
+				const metadata = JSON.parse(stdout).format;
+
+				if (!metadata) {
+					return reject(new Error('No metadata found in ffprobe output.'));
+				}
+
+				resolve({
+					duration: parseFloat(metadata.duration) || 0, // Duration in seconds
+					format: metadata.format_name || 'unknown', // Video format (e.g., mp4, mkv)
+					size: parseInt(metadata.size, 10) || 0, // File size in bytes
+				});
+			} catch (parseError) {
+				reject(new Error(`Error parsing ffprobe output: ${parseError.message}`));
+			}
+		});
+	});
+}
+
 
 app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 	console.log("file uploaded successfully");
@@ -268,8 +307,62 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 		fs.mkdirSync(outputPath, { recursive: true });
 	}
 
-	let imagePath = `${outputPath}/${titleName}.jpg`;
+	let videoTitle = "";
 
+	try {
+		const response = await getSongMetadataFromLastFM(titleName);
+		console.log("response : ", response);
+
+		if (response.error) {
+			console.log("Error : ", response.error);
+		}
+
+		if (
+			response.title &&
+			!["", "undefined", "null", "N/A", "Unknown", "[unknown]"].includes(response.title)
+		) {
+			videoTitle = response.title;
+		}
+
+		if (
+			response.artist &&
+			!["", "undefined", "null", "N/A", "Unknown", "[unknown]"].includes(response.artist)
+		) {
+			videoTitle += ` - ${response.artist}`;
+		}
+
+		console.log("videoTitle : ", response.title);
+		console.log("artist : ", response.artist);
+	} catch (error) {
+		console.error("Error fetching song metadata:", error);
+	}
+
+	if (!videoTitle || videoTitle.trim() === "" || videoTitle === undefined || videoTitle === null || videoTitle.indexOf("undefined") > -1) {
+		videoTitle = titleName;
+	}
+
+
+	let imagePath = `${outputPath}/${videoTitle}.jpg`;
+
+	//Extrect Metadata
+
+	let finalmetadata = {
+		duration: 0,
+		format: "unknown",
+		size: 0,
+	};
+
+	await getVideoMetadata(videoPath)
+		.then((metadata) => {
+			console.log('Video Metadata:', metadata);
+			finalmetadata = metadata;
+		})
+		.catch((error) => {
+			console.error("Error fetching video metadata:", error);
+		});
+
+
+	console.log("finalmetadata : ", finalmetadata);
 	// Extrect Image
 
 	// const extImaCmd = `ffmpeg -i ${videoPath} -frames:v 1 -q:v 2 "${imagePath}"`;
@@ -318,13 +411,18 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 
 		const payload =
 		{
-			title: titleName,
+			title: videoTitle,
 			path: videoUrl,
 			size: videoSize,
-			img: imagePath.substring(1)
+			img: imagePath.substring(1),
+			duration: finalmetadata.duration,
+			format: finalmetadata.format,
 		}
 
 		let success, message, error;
+
+		console.log("payload : ", payload);
+		console.log("endpoint : ", endpoint);
 
 		await apiService.postData(endpoint, payload).then((response) => {
 			console.log("response : ", response);
@@ -348,7 +446,7 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 			res.status(200).json({
 				status: true,
 				message,
-				title: titleName,
+				title: videoTitle,
 				videoUrl: videoUrl,
 				videoID: videoID,
 				videoSize: videoSize,
@@ -371,6 +469,88 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 		return fs.rmSync(videoPath); // remove upload video after chunk
 	});
 });
+
+app.post('/download', async (req, res) => {
+	const videoURL = req.body.url;
+	const youtubeUrlPattern = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$/;
+	if (!videoURL || !youtubeUrlPattern.test(videoURL)) {
+		return res.status(400).json({ error: 'Invalid or missing YouTube URL.' });
+	}
+
+	try {
+		// Get video info first to determine the file name
+		const info = await youtubedl(videoURL, { dumpSingleJson: true });
+		const safeTitle = info.title.replace(/[\/\\?%*:|"<>]/g, '-');
+
+		// Find any file that starts with the safeTitle and a dot (any extension)
+		const existingFile = fs.readdirSync('./uploads').find(f =>
+			f.startsWith(safeTitle + '.') && fs.statSync(path.join('./uploads', f)).isFile()
+		);
+
+		if (existingFile) {
+			return res.status(200).json({
+				message: 'File already exists',
+				file: existingFile,
+				url: `/uploads/${existingFile}`,
+				alreadyExists: true
+			});
+		}
+
+		// List files before download
+		const beforeFiles = new Set(fs.readdirSync('./uploads'));
+
+		const infoPath = path.join('./uploads', 'videoInfo.json');
+
+		// Delete videoInfo.json if it exists
+		if (fs.existsSync(infoPath)) {
+			fs.unlinkSync(infoPath);
+			console.log('Old videoInfo.json deleted.');
+		}
+
+		fs.writeFileSync(infoPath, JSON.stringify(info));
+		console.log('Video info saved.');
+
+		const outputPath = path.join('./uploads', `${safeTitle}.%(ext)s`);
+		await youtubedl.exec('', {
+			loadInfoJson: infoPath,
+			output: outputPath
+		});
+		console.log('Video downloaded.');
+
+		// Delete videoInfo.json if it exists
+		if (fs.existsSync(infoPath)) {
+			fs.unlinkSync(infoPath);
+			console.log('New videoInfo.json deleted.');
+		}
+
+		// List files after download
+		const afterFiles = new Set(fs.readdirSync('./uploads'));
+		// Find the new file(s)
+		const newFiles = [...afterFiles].filter(x => !beforeFiles.has(x));
+		const downloadedFile = newFiles.length > 0 ? newFiles[0] : null;
+
+		if (!downloadedFile) {
+			return res.status(500).json({ error: 'Download failed, file not found.' });
+		}
+
+		return res.status(201).json({
+			message: 'Download completed',
+			file: downloadedFile,
+			url: `/uploads/${downloadedFile}`,
+			alreadyExists: false
+		});
+
+
+		// now transcode this
+
+
+
+	} catch (err) {
+		console.error('Error:', err);
+		return res.status(500).json({ error: 'Failed to download video', details: err.message });
+	}
+});
+
 
 app.listen(server_port, '0.0.0.0', () => {
 	console.log(`App is listening on port ${server_port}`);

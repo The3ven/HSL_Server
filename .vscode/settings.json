@@ -3,5 +3,8 @@
 	"editor.formatOnSave": true,
 	"prettier.useTabs": true,
 	"prettier.tabWidth": 4,
-	"prettier.bracketSameLine": true
+	"prettier.bracketSameLine": true,
+	"[json]": {
+		"editor.defaultFormatter": "vscode.json-language-features"
+	}
 }
