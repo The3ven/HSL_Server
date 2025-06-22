@@ -1,4 +1,4 @@
-import express, { response } from "express";
+import express from "express";
 import cors from "cors";
 import multer from "multer";
 import { v4 as uuid4 } from "uuid";
@@ -8,11 +8,11 @@ import fs from "fs";
 import os from "os";
 import { getDiskUsage } from "./helper/diskUsage.js";
 import { formatUptime, formatCurrentTime } from "./helper/timeFormatter.js";
-import { exec, spawn } from "child_process"; // whach out
 import https from "https";
 import ApiService from "./services/apiService.js"
 import { getSongMetadataFromLastFM } from "./helper/titleFormatter.js";
 import youtubedl from 'youtube-dl-exec';
+import { spawnPromise } from "./services/command_executor.js";
 
 /* ------------------------------------------------------- ENV ------------------------------------------------------ */
 
@@ -103,46 +103,6 @@ app.get("/status", async (req, res) => {
 		currentTime: formatCurrentTime(),
 	});
 });
-
-
-// Wrap the spawn command to manage the process and ensure memory cleanup
-const spawnPromise = (cmd) => {
-	return new Promise((resolve, reject) => {
-		const process = spawn(cmd, { shell: true });
-
-		let stdout = '';
-		let stderr = '';
-
-		// Capture stdout data
-		process.stdout.on('data', (data) => {
-			stdout += data.toString();
-		});
-
-		// Capture stderr data
-		process.stderr.on('data', (data) => {
-			stderr += data.toString();
-		});
-
-		// Handle process exit
-		process.on('close', (code) => {
-			if (code !== 0) {
-				reject(`Process exited with code ${code}. stderr: ${stderr}`);
-			} else {
-				resolve({ stdout, stderr });
-			}
-		});
-
-		// Handle errors from the spawn process
-		process.on('error', (err) => {
-			reject(`Failed to start the process: ${err.message}`);
-		});
-
-		// Ensure proper cleanup of process on failure or success
-		process.on('exit', () => {
-			process.kill(); // Explicitly kill the process after execution
-		});
-	});
-};
 
 
 app.post("/uploadProfilePicture", upload.single("profileImage"), async (req, res) => {
@@ -386,13 +346,25 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 	const ffmpegCommand = `ffmpeg -i ${videoPath} -codec:v libx264 -codec:a aac -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" -start_number 0 ${hlsPath}`;
 
 	// no queue becaus eof POC, not to be use in production
+	try {
+		const result = await spawnPromise(ffmpegCommand);
 
-	await exec(ffmpegCommand, async (err, stdout, stderr) => {
-		if (err) {
-			console.log(`exec error: ${err}`);
+		console.log(`stdout: ${result.stdout}`);
+		console.log(`stderr: ${result.stderr}`);
+
+		if (result.stderr) {
+			console.error("Error in ffmpeg command:", result.stderr);
+			return res.status(500).json({
+				status: false,
+				message: "Error in ffmpeg command",
+				title: titleName,
+				videoUrl: "",
+				videoID: videoID,
+				videoSize: videoSize,
+				img: imagePath.substring(1)
+			});
 		}
-		console.log(`stdout: ${stdout}`);
-		console.log(`stderr: ${stderr}`);
+
 
 		videoUrl = `/uploads/videos/${videoID}/index.m3u8`;
 
@@ -467,7 +439,90 @@ app.post("/uploadVideo", upload.single("video"), async (req, res) => {
 		}
 
 		return fs.rmSync(videoPath); // remove upload video after chunk
-	});
+	} catch (error) {
+		console.error("Error executing ffmpeg command:", error);
+	}
+	// await exec(ffmpegCommand, async (err, stdout, stderr) => {
+	// 	if (err) {
+	// 		console.log(`exec error: ${err}`);
+	// 	}
+	// 	console.log(`stdout: ${stdout}`);
+	// 	console.log(`stderr: ${stderr}`);
+
+	// videoUrl = `/uploads/videos/${videoID}/index.m3u8`;
+
+	// console.log("imagePath : ", imagePath);
+
+	// try {
+	// 	fs.accessSync(imagePath, fs.constants.F_OK);
+	// 	console.log("Image exists");
+	// }
+	// catch (err) {
+	// 	console.error("Image not exists error : ", err);
+	// 	imagePath = "";
+	// }
+
+	// const endpoint = "/videos_info";
+
+	// const payload =
+	// {
+	// 	title: videoTitle,
+	// 	path: videoUrl,
+	// 	size: videoSize,
+	// 	img: imagePath.substring(1),
+	// 	duration: finalmetadata.duration,
+	// 	format: finalmetadata.format,
+	// }
+
+	// let success, message, error;
+
+	// console.log("payload : ", payload);
+	// console.log("endpoint : ", endpoint);
+
+	// await apiService.postData(endpoint, payload).then((response) => {
+	// 	console.log("response : ", response);
+	// 	success = response.success;
+	// 	message = response.message;
+	// 	error = response.error;
+	// }).catch((error) => {
+	// 	console.error("Error : ", error);
+	// 	success = false;
+	// 	message = "Error in API call";
+	// 	error = error;
+	// });
+
+
+
+	// console.log("success : ", success);
+	// console.log("message : ", message);
+	// console.log("error : ", error);
+
+	// if (success) {
+	// 	res.status(200).json({
+	// 		status: true,
+	// 		message,
+	// 		title: videoTitle,
+	// 		videoUrl: videoUrl,
+	// 		videoID: videoID,
+	// 		videoSize: videoSize,
+	// 		img: imagePath.substring(1)
+	// 	});
+	// } else {
+	// 	fs.rmSync(videoPath);
+	// 	return res.status(500).json({
+	// 		status: false,
+	// 		message,
+	// 		title: titleName,
+	// 		error,
+	// 		videoUrl,
+	// 		videoID,
+	// 		videoSize,
+	// 		img: imagePath.substring(1)
+	// 	});
+	// }
+
+	// return fs.rmSync(videoPath); // remove upload video after chunk
+	// });
 });
 
 app.post('/download', async (req, res) => {
